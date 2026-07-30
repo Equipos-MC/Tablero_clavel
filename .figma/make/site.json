@@ -1,0 +1,11 @@
+{
+  "title": "Tablero de ensambles | Equipos MC",
+  "description": "Control de avance de fabricación para ensambles de Equipos Hidromecánicos MC.",
+  "language": "es",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": true
+  }
+}
