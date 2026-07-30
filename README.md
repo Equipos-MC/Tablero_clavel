@@ -35,3 +35,13 @@ pnpm run dev
 ```bash
 pnpm run build
 ```
+
+## Persistencia con Supabase
+
+La plataforma guarda los Excel en un bucket privado de Supabase y registra cada
+documento en PostgreSQL. La configuración inicial está en
+`supabase/setup.sql`.
+
+1. Ejecutar `supabase/setup.sql` en el SQL Editor del proyecto.
+2. Crear los usuarios autorizados en Authentication → Users.
+3. Los usuarios deben utilizar un correo terminado en `@equiposmc.com`.

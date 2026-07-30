@@ -1,7 +1,9 @@
-import { useRef, useState, type ChangeEvent, type DragEvent } from "react";
+import { useEffect, useRef, useState, type ChangeEvent, type DragEvent, type FormEvent } from "react";
+import type { Session } from "@supabase/supabase-js";
 import * as XLSX from "xlsx";
 import JSZip from "jszip";
 import equiposMcLogo from "./assets/equipos-mc-logo.png";
+import { supabase } from "./supabase";
 
 type Piece = {
   id: string;
@@ -19,8 +21,24 @@ type Piece = {
 
 type Assembly = { name: string; pieces: Piece[]; target: number; made: number; pending: number };
 
-type ImportResult = { id: string; fileName: string; group: Group; assemblies: Assembly[]; images: string[]; error?: string };
+type ImportResult = {
+  id: string;
+  fileName: string;
+  group: Group;
+  assemblies: Assembly[];
+  images: string[];
+  error?: string;
+  recordId?: string;
+  storagePath?: string;
+};
 type Group = "GRÚA" | "CARROCERÍA";
+
+type StoredDocument = {
+  id: string;
+  file_name: string;
+  group_name: Group;
+  storage_path: string;
+};
 
 const NORMALIZE = (value: unknown) =>
   String(value ?? "")
@@ -252,42 +270,185 @@ function AssemblyDetail({ document, assembly, onBack }: { document: ImportResult
   </main>;
 }
 
+function LoginScreen() {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  const signIn = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setSubmitting(true);
+    setError("");
+    const { error: signInError } = await supabase.auth.signInWithPassword({ email, password });
+    if (signInError) setError("No se pudo iniciar sesión. Revisa tu correo y contraseña.");
+    setSubmitting(false);
+  };
+
+  return <main className="auth-page">
+    <section className="auth-card">
+      <img src={equiposMcLogo} alt="Equipos Hidromecánicos MC" />
+      <p className="eyebrow">CONTROL DE FABRICACIÓN</p>
+      <h1>Tablero de ensambles</h1>
+      <p className="auth-intro">Acceso exclusivo para personal de Equipos MC.</p>
+      <form onSubmit={signIn}>
+        <label>Correo corporativo<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="nombre@equiposmc.com" required /></label>
+        <label>Contraseña<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required /></label>
+        {error && <p className="auth-error">{error}</p>}
+        <button type="submit" disabled={submitting}>{submitting ? "Ingresando…" : "Ingresar al tablero"}</button>
+      </form>
+    </section>
+  </main>;
+}
+
 export default function App() {
   const inputRef = useRef<HTMLInputElement>(null);
   const [imports, setImports] = useState<ImportResult[]>([]);
   const [dragging, setDragging] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [loadingStored, setLoadingStored] = useState(true);
+  const [session, setSession] = useState<Session | null>(null);
+  const [checkingSession, setCheckingSession] = useState(true);
+  const [databaseError, setDatabaseError] = useState("");
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [activeGroup, setActiveGroup] = useState<Group>("GRÚA");
   const [activeView, setActiveView] = useState<"RESUMEN" | "DOCUMENTOS">("RESUMEN");
   const [selectedAssembly, setSelectedAssembly] = useState<{ document: ImportResult; assembly: Assembly } | null>(null);
+
+  useEffect(() => {
+    void supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+      setCheckingSession(false);
+    });
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession);
+      setCheckingSession(false);
+    });
+    return () => listener.subscription.unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!session) {
+      setImports([]);
+      setLoadingStored(false);
+      return;
+    }
+
+    let cancelled = false;
+    const loadDocuments = async () => {
+      setLoadingStored(true);
+      setDatabaseError("");
+      const { data, error } = await supabase
+        .from("assembly_documents")
+        .select("id,file_name,group_name,storage_path")
+        .order("created_at", { ascending: true });
+
+      if (error) {
+        if (!cancelled) {
+          setDatabaseError("La base todavía no está configurada o no tienes permiso para consultar los documentos.");
+          setLoadingStored(false);
+        }
+        return;
+      }
+
+      const restored = await Promise.all((data as StoredDocument[]).map(async (record) => {
+        const { data: file, error: downloadError } = await supabase.storage
+          .from("assembly-excel")
+          .download(record.storage_path);
+        if (downloadError) {
+          return {
+            id: record.id,
+            recordId: record.id,
+            storagePath: record.storage_path,
+            fileName: record.file_name,
+            group: record.group_name,
+            assemblies: [],
+            images: [],
+            error: "No se pudo recuperar el archivo almacenado.",
+          } satisfies ImportResult;
+        }
+        const parsed = await parseWorkbook(record.file_name, record.group_name, await file.arrayBuffer());
+        return { ...parsed, id: record.id, recordId: record.id, storagePath: record.storage_path };
+      }));
+
+      if (!cancelled) {
+        setImports(restored);
+        setLoadingStored(false);
+      }
+    };
+    void loadDocuments();
+    return () => { cancelled = true; };
+  }, [session]);
 
   const importFiles = async (files: FileList | File[]) => {
     const selected = Array.from(files).filter((file) => /\.(xlsx|xls)$/i.test(file.name));
     if (!selected.length) return;
     setLoading(true);
-    const next = await Promise.all(selected.map(async (file) => parseWorkbook(file.name, activeGroup, await file.arrayBuffer())));
+    setDatabaseError("");
+    const next = await Promise.all(selected.map(async (file) => {
+      const buffer = await file.arrayBuffer();
+      const parsed = await parseWorkbook(file.name, activeGroup, buffer);
+      if (parsed.error) return parsed;
+
+      const safeName = file.name.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-zA-Z0-9._-]/g, "-");
+      const storagePath = `${activeGroup}/${crypto.randomUUID()}-${safeName}`;
+      const { error: uploadError } = await supabase.storage
+        .from("assembly-excel")
+        .upload(storagePath, file, { contentType: file.type || "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+      if (uploadError) return { ...parsed, error: "El Excel se leyó, pero no se pudo guardar en Supabase." };
+
+      const { data: record, error: insertError } = await supabase
+        .from("assembly_documents")
+        .insert({ file_name: file.name, group_name: activeGroup, storage_path: storagePath })
+        .select("id")
+        .single();
+      if (insertError) {
+        await supabase.storage.from("assembly-excel").remove([storagePath]);
+        return { ...parsed, error: "El archivo se cargó, pero no se pudo registrar en la base de datos." };
+      }
+      return { ...parsed, id: record.id, recordId: record.id, storagePath };
+    }));
     setImports((current) => [...current, ...next]);
     setLoading(false);
   };
   const handleChange = (event: ChangeEvent<HTMLInputElement>) => { if (event.target.files) void importFiles(event.target.files); event.target.value = ""; };
   const onDrop = (event: DragEvent<HTMLDivElement>) => { event.preventDefault(); setDragging(false); void importFiles(event.dataTransfer.files); };
-  const removeFile = (id: string) => setImports((current) => current.filter((item) => item.id !== id));
+  const removeFile = async (item: ImportResult) => {
+    if (!item.recordId || !item.storagePath) {
+      setImports((current) => current.filter((entry) => entry.id !== item.id));
+      return;
+    }
+    setDeletingId(item.id);
+    const { error: storageError } = await supabase.storage.from("assembly-excel").remove([item.storagePath]);
+    if (!storageError) {
+      const { error: rowError } = await supabase.from("assembly_documents").delete().eq("id", item.recordId);
+      if (!rowError) setImports((current) => current.filter((entry) => entry.id !== item.id));
+      else setDatabaseError("No se pudo eliminar el registro del documento.");
+    } else {
+      setDatabaseError("No se pudo eliminar el archivo almacenado.");
+    }
+    setDeletingId(null);
+  };
   const visibleImports = imports.filter((item) => item.group === activeGroup);
   const assemblyEntries = visibleImports.flatMap((doc) => doc.assemblies.map((assembly) => ({ document: doc, assembly })));
   const total = assemblyEntries.reduce((sum, { assembly }) => sum + assembly.target, 0);
   const made = assemblyEntries.reduce((sum, { assembly }) => sum + assembly.made, 0);
 
+  if (checkingSession) return <main className="auth-page"><p className="auth-loading">Preparando acceso seguro…</p></main>;
+  if (!session) return <LoginScreen />;
   if (selectedAssembly) return <AssemblyDetail document={selectedAssembly.document} assembly={selectedAssembly.assembly} onBack={() => setSelectedAssembly(null)} />;
 
   return <main className="shell">
-    <header className="masthead"><div className="brand"><img src={equiposMcLogo} alt="Equipos Hidromecánicos MC" /></div><div className="title-block"><p>CONTROL DE FABRICACIÓN</p><h1>Tablero de ensambles</h1></div></header>
+    <header className="masthead"><div className="brand"><img src={equiposMcLogo} alt="Equipos Hidromecánicos MC" /></div><div className="title-block"><p>CONTROL DE FABRICACIÓN</p><h1>Tablero de ensambles</h1></div><button className="sign-out" onClick={() => void supabase.auth.signOut()}>Cerrar sesión</button></header>
     <nav className="group-tabs" aria-label="Tipo de ensambles">{(["GRÚA", "CARROCERÍA"] as Group[]).map((group) => <button key={group} className={activeGroup === group ? "active" : ""} onClick={() => setActiveGroup(group)}>{group}<span>{imports.filter((item) => item.group === group).length}</span></button>)}</nav>
     <nav className="sub-tabs" aria-label="Vistas de la categoría"><button className={activeView === "RESUMEN" ? "active" : ""} onClick={() => setActiveView("RESUMEN")}>Resumen</button><button className={activeView === "DOCUMENTOS" ? "active" : ""} onClick={() => setActiveView("DOCUMENTOS")}>Subir documentos <span>{visibleImports.length}</span></button></nav>
     <section className="workspace">
       <div className="workspace-head"><div><p className="eyebrow">ENSAMBLES DE {activeGroup}</p><h2>Avance de fabricación</h2></div>{assemblyEntries.length > 0 && <div className="global-progress"><b>{percent(made, total)}%</b><span>avance general</span></div>}</div>
-      {activeView === "DOCUMENTOS" ? <>
+      {databaseError && <p className="database-error">{databaseError}</p>}
+      {loadingStored ? <p className="loading-documents">Recuperando documentos almacenados…</p> :
+      activeView === "DOCUMENTOS" ? <>
         <div className="import-strip"><div><b>Documentos de {activeGroup.toLowerCase()}</b><span>Importa y conserva los Excel de esta categoría.</span></div><div className={`dropzone compact ${dragging ? "is-dragging" : ""}`} onDragOver={(event) => { event.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={onDrop} role="button" tabIndex={0} onClick={() => inputRef.current?.click()} onKeyDown={(event) => event.key === "Enter" && inputRef.current?.click()}><input ref={inputRef} type="file" accept=".xlsx,.xls" multiple onChange={handleChange} /><strong>{loading ? "Leyendo…" : "＋ Agregar archivos Excel"}</strong></div></div>
-        <div className="file-list document-list">{visibleImports.length ? visibleImports.map((item) => <div key={item.id} className={item.error ? "file-row error" : "file-row"}><span className="file-status">{item.error ? "!" : "✓"}</span><span className="file-name">{item.fileName}</span><small>{item.error ?? `${item.assemblies.length} ensamble(s)`}</small><button className="remove-file" onClick={() => removeFile(item.id)} aria-label={`Eliminar ${item.fileName}`}>Eliminar</button></div>) : <p className="no-documents">No hay documentos cargados en {activeGroup.toLowerCase()}.</p>}</div>
+        <div className="file-list document-list">{visibleImports.length ? visibleImports.map((item) => <div key={item.id} className={item.error ? "file-row error" : "file-row"}><span className="file-status">{item.error ? "!" : "✓"}</span><span className="file-name">{item.fileName}</span><small>{item.error ?? `${item.assemblies.length} ensamble(s)`}</small><button className="remove-file" disabled={deletingId === item.id} onClick={() => void removeFile(item)} aria-label={`Eliminar ${item.fileName}`}>{deletingId === item.id ? "Eliminando…" : "Eliminar"}</button></div>) : <p className="no-documents">No hay documentos cargados en {activeGroup.toLowerCase()}.</p>}</div>
       </> : assemblyEntries.length ? <section className="progress-list" aria-label={`Avance de los ensambles de ${activeGroup}`}><div className="list-labels"><span>ENSAMBLE</span><span>AVANCE</span><span>%</span><span>CANTIDAD DE ENSAMBLES</span><span>HECHAS</span><span>POR HACER</span></div>{assemblyEntries.map(({ document, assembly }, index) => <AssemblyProgress key={`${assembly.name}-${index}`} assembly={assembly} onClick={() => setSelectedAssembly({ document, assembly })} />)}</section> : <section className="empty-state"><div className="empty-symbol">▦</div><p className="eyebrow">{activeGroup} EN ESPERA</p><h2>Aún no hay ensambles cargados</h2><p>Ve a "Subir documentos" para importar los archivos de {activeGroup.toLowerCase()}.</p></section>}
     </section>
   </main>;
