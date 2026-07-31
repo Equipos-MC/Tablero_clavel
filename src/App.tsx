@@ -417,7 +417,8 @@ export default function App() {
       if (parsed.error) return parsed;
 
       const safeName = file.name.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-zA-Z0-9._-]/g, "-");
-      const storagePath = `${activeGroup}/${crypto.randomUUID()}-${safeName}`;
+      const groupFolder = activeGroup === "GRÚA" ? "grua" : "carroceria";
+      const storagePath = `${groupFolder}/${crypto.randomUUID()}-${safeName}`;
       const { error: uploadError } = await supabase.storage
         .from("assembly-excel")
         .upload(storagePath, file, { contentType: file.type || "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
