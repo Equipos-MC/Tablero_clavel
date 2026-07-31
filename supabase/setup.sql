@@ -19,22 +19,21 @@ drop policy if exists "Equipos MC lee documentos" on public.assembly_documents;
 create policy "Equipos MC lee documentos"
 on public.assembly_documents for select
 to authenticated
-using (lower(auth.jwt() ->> 'email') like '%@equiposmc.com');
+using (true);
 
 drop policy if exists "Equipos MC agrega documentos" on public.assembly_documents;
 create policy "Equipos MC agrega documentos"
 on public.assembly_documents for insert
 to authenticated
 with check (
-  lower(auth.jwt() ->> 'email') like '%@equiposmc.com'
-  and uploaded_by = auth.uid()
+  uploaded_by = auth.uid()
 );
 
 drop policy if exists "Equipos MC elimina documentos" on public.assembly_documents;
 create policy "Equipos MC elimina documentos"
 on public.assembly_documents for delete
 to authenticated
-using (lower(auth.jwt() ->> 'email') like '%@equiposmc.com');
+using (true);
 
 drop policy if exists "Equipos MC lee archivos Excel" on storage.objects;
 create policy "Equipos MC lee archivos Excel"
@@ -42,7 +41,6 @@ on storage.objects for select
 to authenticated
 using (
   bucket_id = 'assembly-excel'
-  and lower(auth.jwt() ->> 'email') like '%@equiposmc.com'
 );
 
 drop policy if exists "Equipos MC carga archivos Excel" on storage.objects;
@@ -51,7 +49,6 @@ on storage.objects for insert
 to authenticated
 with check (
   bucket_id = 'assembly-excel'
-  and lower(auth.jwt() ->> 'email') like '%@equiposmc.com'
 );
 
 drop policy if exists "Equipos MC elimina archivos Excel" on storage.objects;
@@ -60,5 +57,4 @@ on storage.objects for delete
 to authenticated
 using (
   bucket_id = 'assembly-excel'
-  and lower(auth.jwt() ->> 'email') like '%@equiposmc.com'
 );

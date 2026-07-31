@@ -259,6 +259,32 @@ function AssemblyProgress({ assembly, onClick }: { assembly: Assembly; onClick?:
   </article>;
 }
 
+function DonutChart({ group, made, pending }: { group: Group; made: number; pending: number }) {
+  const total = made + pending;
+  const done = percent(made, total);
+  return <article className="donut-card">
+    <div className="donut" style={{ background: `conic-gradient(var(--green) 0 ${done}%, #dce6ec ${done}% 100%)` }}>
+      <div><strong>{done}%</strong><span>avance</span></div>
+    </div>
+    <div className="donut-copy">
+      <p className="eyebrow">{group}</p>
+      <h3>Avance del ensamble</h3>
+      <dl><div><dt>Hechas</dt><dd>{made}</dd></div><div><dt>Por hacer</dt><dd>{pending}</dd></div></dl>
+    </div>
+  </article>;
+}
+
+function CategoryReference({ group }: { group: Group }) {
+  const base = import.meta.env.BASE_URL;
+  const isCrane = group === "GRÚA";
+  return <aside className="category-reference">
+    <img
+      src={`${base}assets/${isCrane ? "eh150-grua.jpeg" : "eh150-carroceria.png"}`}
+      alt={isCrane ? "Vista lateral de la grúa EH-150" : "Imagen de carrocería EH-150"}
+    />
+  </aside>;
+}
+
 function AssemblyDetail({ document, assembly, onBack }: { document: ImportResult; assembly: Assembly; onBack: () => void }) {
   const done = percent(assembly.made, assembly.target);
   return <main className="shell detail-screen">
@@ -289,7 +315,7 @@ function LoginScreen() {
     <section className="auth-card">
       <img src={equiposMcLogo} alt="Equipos Hidromecánicos MC" />
       <p className="eyebrow">CONTROL DE FABRICACIÓN</p>
-      <h1>Tablero de ensambles</h1>
+      <h1>EH-150 · Tablero de ensambles</h1>
       <p className="auth-intro">Acceso exclusivo para personal de Equipos MC.</p>
       <form onSubmit={signIn}>
         <label>Correo corporativo<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="nombre@equiposmc.com" required /></label>
@@ -395,7 +421,7 @@ export default function App() {
       const { error: uploadError } = await supabase.storage
         .from("assembly-excel")
         .upload(storagePath, file, { contentType: file.type || "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
-      if (uploadError) return { ...parsed, error: "El Excel se leyó, pero no se pudo guardar en Supabase." };
+      if (uploadError) return { ...parsed, error: `No se pudo guardar en Supabase: ${uploadError.message}` };
 
       const { data: record, error: insertError } = await supabase
         .from("assembly_documents")
@@ -404,11 +430,16 @@ export default function App() {
         .single();
       if (insertError) {
         await supabase.storage.from("assembly-excel").remove([storagePath]);
-        return { ...parsed, error: "El archivo se cargó, pero no se pudo registrar en la base de datos." };
+        return { ...parsed, error: `No se pudo registrar en la base de datos: ${insertError.message}` };
       }
       return { ...parsed, id: record.id, recordId: record.id, storagePath };
     }));
-    setImports((current) => [...current, ...next]);
+    const successful = next.filter((item) => !item.error);
+    const failed = next.filter((item) => item.error);
+    if (failed.length) {
+      setDatabaseError(`${failed.length} archivo(s) no se guardaron. ${failed[0].error}`);
+    }
+    setImports((current) => [...current, ...successful]);
     setLoading(false);
   };
   const handleChange = (event: ChangeEvent<HTMLInputElement>) => { if (event.target.files) void importFiles(event.target.files); event.target.value = ""; };
@@ -433,17 +464,33 @@ export default function App() {
   const assemblyEntries = visibleImports.flatMap((doc) => doc.assemblies.map((assembly) => ({ document: doc, assembly })));
   const total = assemblyEntries.reduce((sum, { assembly }) => sum + assembly.target, 0);
   const made = assemblyEntries.reduce((sum, { assembly }) => sum + assembly.made, 0);
+  const groupProgress = (group: Group) => {
+    const assemblies = imports
+      .filter((item) => item.group === group)
+      .flatMap((item) => item.assemblies);
+    return {
+      made: assemblies.reduce((sum, assembly) => sum + assembly.made, 0),
+      pending: assemblies.reduce((sum, assembly) => sum + assembly.pending, 0),
+    };
+  };
+  const craneProgress = groupProgress("GRÚA");
+  const bodyProgress = groupProgress("CARROCERÍA");
 
   if (checkingSession) return <main className="auth-page"><p className="auth-loading">Preparando acceso seguro…</p></main>;
   if (!session) return <LoginScreen />;
   if (selectedAssembly) return <AssemblyDetail document={selectedAssembly.document} assembly={selectedAssembly.assembly} onBack={() => setSelectedAssembly(null)} />;
 
   return <main className="shell">
-    <header className="masthead"><div className="brand"><img src={equiposMcLogo} alt="Equipos Hidromecánicos MC" /></div><div className="title-block"><p>CONTROL DE FABRICACIÓN</p><h1>Tablero de ensambles</h1></div><button className="sign-out" onClick={() => void supabase.auth.signOut()}>Cerrar sesión</button></header>
+    <header className="masthead"><div className="brand"><img src={equiposMcLogo} alt="Equipos Hidromecánicos MC" /></div><div className="title-block"><p>CONTROL DE FABRICACIÓN</p><h1>EH-150 · Tablero de ensambles</h1></div><button className="sign-out" onClick={() => void supabase.auth.signOut()}>Cerrar sesión</button></header>
     <nav className="group-tabs" aria-label="Tipo de ensambles">{(["GRÚA", "CARROCERÍA"] as Group[]).map((group) => <button key={group} className={activeGroup === group ? "active" : ""} onClick={() => setActiveGroup(group)}>{group}<span>{imports.filter((item) => item.group === group).length}</span></button>)}</nav>
     <nav className="sub-tabs" aria-label="Vistas de la categoría"><button className={activeView === "RESUMEN" ? "active" : ""} onClick={() => setActiveView("RESUMEN")}>Resumen</button><button className={activeView === "DOCUMENTOS" ? "active" : ""} onClick={() => setActiveView("DOCUMENTOS")}>Subir documentos <span>{visibleImports.length}</span></button></nav>
     <section className="workspace">
       <div className="workspace-head"><div><p className="eyebrow">ENSAMBLES DE {activeGroup}</p><h2>Avance de fabricación</h2></div>{assemblyEntries.length > 0 && <div className="global-progress"><b>{percent(made, total)}%</b><span>avance general</span></div>}</div>
+      <CategoryReference group={activeGroup} />
+      {activeView === "RESUMEN" && <section className="chart-grid" aria-label="Avance de Grúa y Carrocería">
+        <DonutChart group="GRÚA" made={craneProgress.made} pending={craneProgress.pending} />
+        <DonutChart group="CARROCERÍA" made={bodyProgress.made} pending={bodyProgress.pending} />
+      </section>}
       {databaseError && <p className="database-error">{databaseError}</p>}
       {loadingStored ? <p className="loading-documents">Recuperando documentos almacenados…</p> :
       activeView === "DOCUMENTOS" ? <>
