@@ -28,6 +28,7 @@ type ImportResult = {
   assemblies: Assembly[];
   images: string[];
   error?: string;
+  persistenceError?: string;
   recordId?: string;
   storagePath?: string;
 };
@@ -105,6 +106,27 @@ function findSummaryValue(rows: unknown[][], labels: string[], limit: number) {
 
 const documentName = (fileName: string) =>
   fileName.replace(/\.(xlsx|xls)$/i, "").trim() || "ENSAMBLE SIN NOMBRE";
+
+const groupFolder = (group: Group) => group === "GRÚA" ? "grua" : "carroceria";
+
+function encodeFileName(fileName: string) {
+  const bytes = new TextEncoder().encode(fileName);
+  let binary = "";
+  bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function decodeStoredFileName(objectName: string) {
+  const encoded = objectName.match(/^[0-9a-f-]{36}--(.+)$/i)?.[1];
+  if (!encoded) return objectName.replace(/^[0-9a-f-]{36}-/i, "");
+  try {
+    const padded = encoded.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(encoded.length / 4) * 4, "=");
+    const binary = atob(padded);
+    return new TextDecoder().decode(Uint8Array.from(binary, (character) => character.charCodeAt(0)));
+  } catch {
+    return objectName;
+  }
+}
 
 async function extractExcelImagesByRow(buffer: ArrayBuffer) {
   const imagesByRow = new Map<number, string>();
@@ -364,20 +386,35 @@ export default function App() {
     const loadDocuments = async () => {
       setLoadingStored(true);
       setDatabaseError("");
-      const { data, error } = await supabase
+      const { data, error: tableError } = await supabase
         .from("assembly_documents")
         .select("id,file_name,group_name,storage_path")
         .order("created_at", { ascending: true });
 
-      if (error) {
-        if (!cancelled) {
-          setDatabaseError("La base todavía no está configurada o no tienes permiso para consultar los documentos.");
-          setLoadingStored(false);
+      const records = tableError ? [] : (data as StoredDocument[]);
+      const knownPaths = new Set(records.map((record) => record.storage_path));
+      const storageOnlyRecords: StoredDocument[] = [];
+
+      for (const group of ["GRÚA", "CARROCERÍA"] as Group[]) {
+        const folder = groupFolder(group);
+        const { data: objects, error: listError } = await supabase.storage
+          .from("assembly-excel")
+          .list(folder, { limit: 1000, sortBy: { column: "created_at", order: "asc" } });
+        if (listError) continue;
+        for (const object of objects ?? []) {
+          const storagePath = `${folder}/${object.name}`;
+          if (knownPaths.has(storagePath) || object.name === ".emptyFolderPlaceholder") continue;
+          storageOnlyRecords.push({
+            id: `storage-${storagePath}`,
+            file_name: decodeStoredFileName(object.name),
+            group_name: group,
+            storage_path: storagePath,
+          });
         }
-        return;
       }
 
-      const restored = await Promise.all((data as StoredDocument[]).map(async (record) => {
+      const allRecords = [...records, ...storageOnlyRecords];
+      const restored = await Promise.all(allRecords.map(async (record) => {
         const { data: file, error: downloadError } = await supabase.storage
           .from("assembly-excel")
           .download(record.storage_path);
@@ -394,11 +431,21 @@ export default function App() {
           } satisfies ImportResult;
         }
         const parsed = await parseWorkbook(record.file_name, record.group_name, await file.arrayBuffer());
-        return { ...parsed, id: record.id, recordId: record.id, storagePath: record.storage_path };
+        return {
+          ...parsed,
+          id: record.id,
+          recordId: record.id.startsWith("storage-") ? undefined : record.id,
+          storagePath: record.storage_path,
+        };
       }));
 
       if (!cancelled) {
         setImports(restored);
+        if (tableError && restored.length) {
+          setDatabaseError("Los documentos se recuperaron directamente del almacenamiento.");
+        } else if (tableError) {
+          setDatabaseError("No se pudo consultar la tabla ni recuperar documentos almacenados.");
+        }
         setLoadingStored(false);
       }
     };
@@ -414,15 +461,13 @@ export default function App() {
     const next = await Promise.all(selected.map(async (file) => {
       const buffer = await file.arrayBuffer();
       const parsed = await parseWorkbook(file.name, activeGroup, buffer);
-      if (parsed.error) return parsed;
-
-      const safeName = file.name.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-zA-Z0-9._-]/g, "-");
-      const groupFolder = activeGroup === "GRÚA" ? "grua" : "carroceria";
-      const storagePath = `${groupFolder}/${crypto.randomUUID()}-${safeName}`;
+      const storagePath = `${groupFolder(activeGroup)}/${crypto.randomUUID()}--${encodeFileName(file.name)}`;
       const { error: uploadError } = await supabase.storage
         .from("assembly-excel")
         .upload(storagePath, file, { contentType: file.type || "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
-      if (uploadError) return { ...parsed, error: `No se pudo guardar en Supabase: ${uploadError.message}` };
+      if (uploadError) {
+        return { ...parsed, persistenceError: `No se pudo guardar: ${uploadError.message}` };
+      }
 
       const { data: record, error: insertError } = await supabase
         .from("assembly_documents")
@@ -430,32 +475,44 @@ export default function App() {
         .select("id")
         .single();
       if (insertError) {
-        await supabase.storage.from("assembly-excel").remove([storagePath]);
-        return { ...parsed, error: `No se pudo registrar en la base de datos: ${insertError.message}` };
+        return { ...parsed, storagePath };
       }
       return { ...parsed, id: record.id, recordId: record.id, storagePath };
     }));
-    const successful = next.filter((item) => !item.error);
-    const failed = next.filter((item) => item.error);
-    if (failed.length) {
-      setDatabaseError(`${failed.length} archivo(s) no se guardaron. ${failed[0].error}`);
-    }
-    setImports((current) => [...current, ...successful]);
+    const saved = next.filter((item) => item.storagePath);
+    const failed = next.filter((item) => item.persistenceError);
+    const invalid = saved.filter((item) => item.error);
+    const messages = [
+      failed.length
+        ? `${failed.length} archivo(s) no se guardaron: ${failed.map((item) => `${item.fileName} (${item.persistenceError})`).join("; ")}`
+        : "",
+      invalid.length
+        ? `${invalid.length} archivo(s) se guardaron, pero necesitan corrección: ${invalid.map((item) => `${item.fileName} (${item.error})`).join("; ")}`
+        : "",
+    ].filter(Boolean);
+    setDatabaseError(messages.join(" "));
+    setImports((current) => [...current, ...next]);
     setLoading(false);
   };
   const handleChange = (event: ChangeEvent<HTMLInputElement>) => { if (event.target.files) void importFiles(event.target.files); event.target.value = ""; };
   const onDrop = (event: DragEvent<HTMLDivElement>) => { event.preventDefault(); setDragging(false); void importFiles(event.dataTransfer.files); };
   const removeFile = async (item: ImportResult) => {
-    if (!item.recordId || !item.storagePath) {
+    if (!item.storagePath) {
       setImports((current) => current.filter((entry) => entry.id !== item.id));
       return;
     }
     setDeletingId(item.id);
     const { error: storageError } = await supabase.storage.from("assembly-excel").remove([item.storagePath]);
     if (!storageError) {
-      const { error: rowError } = await supabase.from("assembly_documents").delete().eq("id", item.recordId);
-      if (!rowError) setImports((current) => current.filter((entry) => entry.id !== item.id));
-      else setDatabaseError("No se pudo eliminar el registro del documento.");
+      if (item.recordId) {
+        const { error: rowError } = await supabase.from("assembly_documents").delete().eq("id", item.recordId);
+        if (rowError) {
+          setDatabaseError("El archivo se eliminó, pero no se pudo borrar su registro.");
+          setDeletingId(null);
+          return;
+        }
+      }
+      setImports((current) => current.filter((entry) => entry.id !== item.id));
     } else {
       setDatabaseError("No se pudo eliminar el archivo almacenado.");
     }
@@ -496,7 +553,10 @@ export default function App() {
       {loadingStored ? <p className="loading-documents">Recuperando documentos almacenados…</p> :
       activeView === "DOCUMENTOS" ? <>
         <div className="import-strip"><div><b>Documentos de {activeGroup.toLowerCase()}</b><span>Importa y conserva los Excel de esta categoría.</span></div><div className={`dropzone compact ${dragging ? "is-dragging" : ""}`} onDragOver={(event) => { event.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={onDrop} role="button" tabIndex={0} onClick={() => inputRef.current?.click()} onKeyDown={(event) => event.key === "Enter" && inputRef.current?.click()}><input ref={inputRef} type="file" accept=".xlsx,.xls" multiple onChange={handleChange} /><strong>{loading ? "Leyendo…" : "＋ Agregar archivos Excel"}</strong></div></div>
-        <div className="file-list document-list">{visibleImports.length ? visibleImports.map((item) => <div key={item.id} className={item.error ? "file-row error" : "file-row"}><span className="file-status">{item.error ? "!" : "✓"}</span><span className="file-name">{item.fileName}</span><small>{item.error ?? `${item.assemblies.length} ensamble(s)`}</small><button className="remove-file" disabled={deletingId === item.id} onClick={() => void removeFile(item)} aria-label={`Eliminar ${item.fileName}`}>{deletingId === item.id ? "Eliminando…" : "Eliminar"}</button></div>) : <p className="no-documents">No hay documentos cargados en {activeGroup.toLowerCase()}.</p>}</div>
+        <div className="file-list document-list">{visibleImports.length ? visibleImports.map((item) => {
+          const itemMessage = item.persistenceError ?? item.error;
+          return <div key={item.id} className={itemMessage ? "file-row error" : "file-row"}><span className="file-status">{itemMessage ? "!" : "✓"}</span><span className="file-name">{item.fileName}</span><small>{itemMessage ?? `${item.assemblies.length} ensamble(s) · Guardado`}</small><button className="remove-file" disabled={deletingId === item.id} onClick={() => void removeFile(item)} aria-label={`Eliminar ${item.fileName}`}>{deletingId === item.id ? "Eliminando…" : "Eliminar"}</button></div>;
+        }) : <p className="no-documents">No hay documentos cargados en {activeGroup.toLowerCase()}.</p>}</div>
       </> : assemblyEntries.length ? <section className="progress-list" aria-label={`Avance de los ensambles de ${activeGroup}`}><div className="list-labels"><span>ENSAMBLE</span><span>AVANCE</span><span>%</span><span>CANTIDAD DE ENSAMBLES</span><span>HECHAS</span><span>POR HACER</span></div>{assemblyEntries.map(({ document, assembly }, index) => <AssemblyProgress key={`${assembly.name}-${index}`} assembly={assembly} onClick={() => setSelectedAssembly({ document, assembly })} />)}</section> : <section className="empty-state"><div className="empty-symbol">▦</div><p className="eyebrow">{activeGroup} EN ESPERA</p><h2>Aún no hay ensambles cargados</h2><p>Ve a "Subir documentos" para importar los archivos de {activeGroup.toLowerCase()}.</p></section>}
     </section>
   </main>;
