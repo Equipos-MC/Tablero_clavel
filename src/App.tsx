@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ChangeEvent, type DragEvent } from "r
 import * as XLSX from "xlsx";
 import JSZip from "jszip";
 import equiposMcLogo from "./assets/equipos-mc-logo.png";
-import { supabase } from "./supabase";
+import { deleteStoredDocument, listStoredDocuments, prepareDocumentUpload, uploadToSpace } from "./storage";
 
 type Piece = {
   id: string;
@@ -28,17 +28,9 @@ type ImportResult = {
   images: string[];
   error?: string;
   persistenceError?: string;
-  recordId?: string;
   storagePath?: string;
 };
 type Group = "GRÚA" | "CARROCERÍA";
-
-type StoredDocument = {
-  id: string;
-  file_name: string;
-  group_name: Group;
-  storage_path: string;
-};
 
 const NORMALIZE = (value: unknown) =>
   String(value ?? "")
@@ -105,27 +97,6 @@ function findSummaryValue(rows: unknown[][], labels: string[], limit: number) {
 
 const documentName = (fileName: string) =>
   fileName.replace(/\.(xlsx|xls)$/i, "").trim() || "ENSAMBLE SIN NOMBRE";
-
-const groupFolder = (group: Group) => group === "GRÚA" ? "grua" : "carroceria";
-
-function encodeFileName(fileName: string) {
-  const bytes = new TextEncoder().encode(fileName);
-  let binary = "";
-  bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
-}
-
-function decodeStoredFileName(objectName: string) {
-  const encoded = objectName.match(/^[0-9a-f-]{36}--(.+)$/i)?.[1];
-  if (!encoded) return objectName.replace(/^[0-9a-f-]{36}-/i, "");
-  try {
-    const padded = encoded.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(encoded.length / 4) * 4, "=");
-    const binary = atob(padded);
-    return new TextDecoder().decode(Uint8Array.from(binary, (character) => character.charCodeAt(0)));
-  } catch {
-    return objectName;
-  }
-}
 
 async function extractExcelImagesByRow(buffer: ArrayBuffer) {
   const imagesByRow = new Map<number, string>();
@@ -334,67 +305,32 @@ export default function App() {
     const loadDocuments = async () => {
       setLoadingStored(true);
       setDatabaseError("");
-      const { data, error: tableError } = await supabase
-        .from("assembly_documents")
-        .select("id,file_name,group_name,storage_path")
-        .order("created_at", { ascending: true });
-
-      const records = tableError ? [] : (data as StoredDocument[]);
-      const knownPaths = new Set(records.map((record) => record.storage_path));
-      const storageOnlyRecords: StoredDocument[] = [];
-
-      for (const group of ["GRÚA", "CARROCERÍA"] as Group[]) {
-        const folder = groupFolder(group);
-        const { data: objects, error: listError } = await supabase.storage
-          .from("assembly-excel")
-          .list(folder, { limit: 1000, sortBy: { column: "created_at", order: "asc" } });
-        if (listError) continue;
-        for (const object of objects ?? []) {
-          const storagePath = `${folder}/${object.name}`;
-          if (knownPaths.has(storagePath) || object.name === ".emptyFolderPlaceholder") continue;
-          storageOnlyRecords.push({
-            id: `storage-${storagePath}`,
-            file_name: decodeStoredFileName(object.name),
-            group_name: group,
-            storage_path: storagePath,
-          });
+      try {
+        const { documents } = await listStoredDocuments();
+        const restored = await Promise.all(documents.map(async (record) => {
+          const response = await fetch(record.downloadUrl);
+          if (!response.ok) {
+            return {
+              id: record.id,
+              storagePath: record.storagePath,
+              fileName: record.fileName,
+              group: record.group,
+              assemblies: [],
+              images: [],
+              error: "No se pudo recuperar el archivo almacenado.",
+            } satisfies ImportResult;
+          }
+          const parsed = await parseWorkbook(record.fileName, record.group, await response.arrayBuffer());
+          return { ...parsed, id: record.id, storagePath: record.storagePath };
+        }));
+        if (!cancelled) setImports(restored);
+      } catch (error) {
+        if (!cancelled) {
+          setImports([]);
+          setDatabaseError(error instanceof Error ? error.message : "No se pudieron recuperar los documentos almacenados.");
         }
-      }
-
-      const allRecords = [...records, ...storageOnlyRecords];
-      const restored = await Promise.all(allRecords.map(async (record) => {
-        const { data: file, error: downloadError } = await supabase.storage
-          .from("assembly-excel")
-          .download(record.storage_path);
-        if (downloadError) {
-          return {
-            id: record.id,
-            recordId: record.id,
-            storagePath: record.storage_path,
-            fileName: record.file_name,
-            group: record.group_name,
-            assemblies: [],
-            images: [],
-            error: "No se pudo recuperar el archivo almacenado.",
-          } satisfies ImportResult;
-        }
-        const parsed = await parseWorkbook(record.file_name, record.group_name, await file.arrayBuffer());
-        return {
-          ...parsed,
-          id: record.id,
-          recordId: record.id.startsWith("storage-") ? undefined : record.id,
-          storagePath: record.storage_path,
-        };
-      }));
-
-      if (!cancelled) {
-        setImports(restored);
-        if (tableError && restored.length) {
-          setDatabaseError("Los documentos se recuperaron directamente del almacenamiento.");
-        } else if (tableError) {
-          setDatabaseError("No se pudo consultar la tabla ni recuperar documentos almacenados.");
-        }
-        setLoadingStored(false);
+      } finally {
+        if (!cancelled) setLoadingStored(false);
       }
     };
     void loadDocuments();
@@ -409,23 +345,15 @@ export default function App() {
     const next = await Promise.all(selected.map(async (file) => {
       const buffer = await file.arrayBuffer();
       const parsed = await parseWorkbook(file.name, activeGroup, buffer);
-      const storagePath = `${groupFolder(activeGroup)}/${crypto.randomUUID()}--${encodeFileName(file.name)}`;
-      const { error: uploadError } = await supabase.storage
-        .from("assembly-excel")
-        .upload(storagePath, file, { contentType: file.type || "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
-      if (uploadError) {
-        return { ...parsed, persistenceError: `No se pudo guardar: ${uploadError.message}` };
+      try {
+        const contentType = file.type || "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+        const { storagePath, uploadUrl } = await prepareDocumentUpload(file.name, activeGroup, contentType);
+        await uploadToSpace(uploadUrl, file);
+        return { ...parsed, id: storagePath, storagePath };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Error desconocido";
+        return { ...parsed, persistenceError: `No se pudo guardar: ${message}` };
       }
-
-      const { data: record, error: insertError } = await supabase
-        .from("assembly_documents")
-        .insert({ file_name: file.name, group_name: activeGroup, storage_path: storagePath })
-        .select("id")
-        .single();
-      if (insertError) {
-        return { ...parsed, storagePath };
-      }
-      return { ...parsed, id: record.id, recordId: record.id, storagePath };
     }));
     const saved = next.filter((item) => item.storagePath);
     const failed = next.filter((item) => item.persistenceError);
@@ -450,19 +378,11 @@ export default function App() {
       return;
     }
     setDeletingId(item.id);
-    const { error: storageError } = await supabase.storage.from("assembly-excel").remove([item.storagePath]);
-    if (!storageError) {
-      if (item.recordId) {
-        const { error: rowError } = await supabase.from("assembly_documents").delete().eq("id", item.recordId);
-        if (rowError) {
-          setDatabaseError("El archivo se eliminó, pero no se pudo borrar su registro.");
-          setDeletingId(null);
-          return;
-        }
-      }
+    try {
+      await deleteStoredDocument(item.storagePath);
       setImports((current) => current.filter((entry) => entry.id !== item.id));
-    } else {
-      setDatabaseError("No se pudo eliminar el archivo almacenado.");
+    } catch (error) {
+      setDatabaseError(error instanceof Error ? error.message : "No se pudo eliminar el archivo almacenado.");
     }
     setDeletingId(null);
   };

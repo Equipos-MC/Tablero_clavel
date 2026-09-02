@@ -1,0 +1,16 @@
+environment:
+  SPACES_REGION: "${SPACES_REGION}"
+  SPACES_BUCKET: "${SPACES_BUCKET}"
+  SPACES_ACCESS_KEY_ID: "${SPACES_ACCESS_KEY_ID}"
+  SPACES_SECRET_ACCESS_KEY: "${SPACES_SECRET_ACCESS_KEY}"
+  APP_ORIGIN: "${APP_ORIGIN}"
+
+packages:
+  - name: storage
+    functions:
+      - name: documents
+        runtime: nodejs:22
+        web: true
+        limits:
+          timeout: 15000
+          memory: 256
