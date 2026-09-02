@@ -1,5 +1,4 @@
-import { useEffect, useRef, useState, type ChangeEvent, type DragEvent, type FormEvent } from "react";
-import type { Session } from "@supabase/supabase-js";
+import { useEffect, useRef, useState, type ChangeEvent, type DragEvent } from "react";
 import * as XLSX from "xlsx";
 import JSZip from "jszip";
 import equiposMcLogo from "./assets/equipos-mc-logo.png";
@@ -318,45 +317,12 @@ function AssemblyDetail({ document, assembly, onBack }: { document: ImportResult
   </main>;
 }
 
-function LoginScreen() {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-
-  const signIn = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    setSubmitting(true);
-    setError("");
-    const { error: signInError } = await supabase.auth.signInWithPassword({ email, password });
-    if (signInError) setError("No se pudo iniciar sesión. Revisa tu correo y contraseña.");
-    setSubmitting(false);
-  };
-
-  return <main className="auth-page">
-    <section className="auth-card">
-      <img src={equiposMcLogo} alt="Equipos Hidromecánicos MC" />
-      <p className="eyebrow">CONTROL DE FABRICACIÓN</p>
-      <h1>EH-150 · Tablero de ensambles</h1>
-      <p className="auth-intro">Acceso exclusivo para personal de Equipos MC.</p>
-      <form onSubmit={signIn}>
-        <label>Correo corporativo<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="nombre@equiposmc.com" required /></label>
-        <label>Contraseña<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required /></label>
-        {error && <p className="auth-error">{error}</p>}
-        <button type="submit" disabled={submitting}>{submitting ? "Ingresando…" : "Ingresar al tablero"}</button>
-      </form>
-    </section>
-  </main>;
-}
-
 export default function App() {
   const inputRef = useRef<HTMLInputElement>(null);
   const [imports, setImports] = useState<ImportResult[]>([]);
   const [dragging, setDragging] = useState(false);
   const [loading, setLoading] = useState(false);
   const [loadingStored, setLoadingStored] = useState(true);
-  const [session, setSession] = useState<Session | null>(null);
-  const [checkingSession, setCheckingSession] = useState(true);
   const [databaseError, setDatabaseError] = useState("");
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [activeGroup, setActiveGroup] = useState<Group>("GRÚA");
@@ -364,24 +330,6 @@ export default function App() {
   const [selectedAssembly, setSelectedAssembly] = useState<{ document: ImportResult; assembly: Assembly } | null>(null);
 
   useEffect(() => {
-    void supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session);
-      setCheckingSession(false);
-    });
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
-      setSession(nextSession);
-      setCheckingSession(false);
-    });
-    return () => listener.subscription.unsubscribe();
-  }, []);
-
-  useEffect(() => {
-    if (!session) {
-      setImports([]);
-      setLoadingStored(false);
-      return;
-    }
-
     let cancelled = false;
     const loadDocuments = async () => {
       setLoadingStored(true);
@@ -451,7 +399,7 @@ export default function App() {
     };
     void loadDocuments();
     return () => { cancelled = true; };
-  }, [session]);
+  }, []);
 
   const importFiles = async (files: FileList | File[]) => {
     const selected = Array.from(files).filter((file) => /\.(xlsx|xls)$/i.test(file.name));
@@ -534,12 +482,10 @@ export default function App() {
   const craneProgress = groupProgress("GRÚA");
   const bodyProgress = groupProgress("CARROCERÍA");
 
-  if (checkingSession) return <main className="auth-page"><p className="auth-loading">Preparando acceso seguro…</p></main>;
-  if (!session) return <LoginScreen />;
   if (selectedAssembly) return <AssemblyDetail document={selectedAssembly.document} assembly={selectedAssembly.assembly} onBack={() => setSelectedAssembly(null)} />;
 
   return <main className="shell">
-    <header className="masthead"><div className="brand"><img src={equiposMcLogo} alt="Equipos Hidromecánicos MC" /></div><div className="title-block"><p>CONTROL DE FABRICACIÓN</p><h1>EH-150 · Tablero de ensambles</h1></div><button className="sign-out" onClick={() => void supabase.auth.signOut()}>Cerrar sesión</button></header>
+    <header className="masthead"><div className="brand"><img src={equiposMcLogo} alt="Equipos Hidromecánicos MC" /></div><div className="title-block"><p>CONTROL DE FABRICACIÓN</p><h1>EH-150 · Tablero de ensambles</h1></div></header>
     <nav className="group-tabs" aria-label="Tipo de ensambles">{(["GRÚA", "CARROCERÍA"] as Group[]).map((group) => <button key={group} className={activeGroup === group ? "active" : ""} onClick={() => setActiveGroup(group)}>{group}<span>{imports.filter((item) => item.group === group).length}</span></button>)}</nav>
     <nav className="sub-tabs" aria-label="Vistas de la categoría"><button className={activeView === "RESUMEN" ? "active" : ""} onClick={() => setActiveView("RESUMEN")}>Resumen</button><button className={activeView === "DOCUMENTOS" ? "active" : ""} onClick={() => setActiveView("DOCUMENTOS")}>Subir documentos <span>{visibleImports.length}</span></button></nav>
     <section className="workspace">

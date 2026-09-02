@@ -38,10 +38,12 @@ pnpm run build
 
 ## Persistencia con Supabase
 
-La plataforma guarda los Excel en un bucket privado de Supabase y registra cada
-documento en PostgreSQL. La configuración inicial está en
-`supabase/setup.sql`.
+La plataforma no requiere inicio de sesión. Guarda los Excel en un bucket
+privado de Supabase y registra cada documento en PostgreSQL mediante la clave
+publicable del proyecto. La configuración inicial y las políticas de acceso
+anónimo están en `supabase/setup.sql`.
 
 1. Ejecutar `supabase/setup.sql` en el SQL Editor del proyecto.
-2. Crear los usuarios autorizados en Authentication → Users.
-3. Los usuarios deben utilizar un correo terminado en `@equiposmc.com`.
+
+Si el proyecto ya estaba configurado con autenticación, vuelve a ejecutar el
+archivo para actualizar las políticas y permitir el acceso sin sesión.
