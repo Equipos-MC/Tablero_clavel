@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ChangeEvent, type DragEvent } from "r
 import * as XLSX from "xlsx";
 import JSZip from "jszip";
 import equiposMcLogo from "./assets/equipos-mc-logo.png";
-import { deleteStoredDocument, listStoredDocuments, prepareDocumentUpload, uploadToSpace } from "./storage";
+import { deleteStoredDocument, listStoredDocuments, prepareDocumentUpload, uploadToSpace, type WorkOrder } from "./storage";
 
 type Piece = {
   id: string;
@@ -30,7 +30,7 @@ type ImportResult = {
   persistenceError?: string;
   storagePath?: string;
 };
-type Group = "GRÚA" | "CARROCERÍA";
+type Group = string;
 
 const NORMALIZE = (value: unknown) =>
   String(value ?? "")
@@ -288,7 +288,7 @@ function AssemblyDetail({ document, assembly, onBack }: { document: ImportResult
   </main>;
 }
 
-export default function App() {
+export default function App({ order, onBack, onAddTab }: { order: WorkOrder; onBack: () => void; onAddTab: () => void }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [imports, setImports] = useState<ImportResult[]>([]);
   const [dragging, setDragging] = useState(false);
@@ -296,7 +296,7 @@ export default function App() {
   const [loadingStored, setLoadingStored] = useState(true);
   const [databaseError, setDatabaseError] = useState("");
   const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [activeGroup, setActiveGroup] = useState<Group>("GRÚA");
+  const [activeGroup, setActiveGroup] = useState<Group>(order.tabs[0]);
   const [activeView, setActiveView] = useState<"RESUMEN" | "DOCUMENTOS">("RESUMEN");
   const [selectedAssembly, setSelectedAssembly] = useState<{ document: ImportResult; assembly: Assembly } | null>(null);
 
@@ -307,7 +307,7 @@ export default function App() {
       setDatabaseError("");
       try {
         const { documents } = await listStoredDocuments();
-        const restored = await Promise.all(documents.map(async (record) => {
+        const restored = await Promise.all(documents.filter((record) => record.orderId === order.id).map(async (record) => {
           const response = await fetch(record.downloadUrl);
           if (!response.ok) {
             return {
@@ -339,7 +339,7 @@ export default function App() {
 
   const importFiles = async (files: FileList | File[]) => {
     const selected = Array.from(files).filter((file) => /\.(xlsx|xls)$/i.test(file.name));
-    if (!selected.length) return;
+    if (!selected.length || loading) return;
     setLoading(true);
     setDatabaseError("");
     const next = await Promise.all(selected.map(async (file) => {
@@ -347,7 +347,7 @@ export default function App() {
       const parsed = await parseWorkbook(file.name, activeGroup, buffer);
       try {
         const contentType = file.type || "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-        const { storagePath, uploadUrl } = await prepareDocumentUpload(file.name, activeGroup, contentType);
+        const { storagePath, uploadUrl } = await prepareDocumentUpload(file.name, activeGroup, contentType, order.id);
         await uploadToSpace(uploadUrl, file);
         return { ...parsed, id: storagePath, storagePath };
       } catch (error) {
@@ -399,21 +399,18 @@ export default function App() {
       pending: assemblies.reduce((sum, assembly) => sum + assembly.pending, 0),
     };
   };
-  const craneProgress = groupProgress("GRÚA");
-  const bodyProgress = groupProgress("CARROCERÍA");
 
   if (selectedAssembly) return <AssemblyDetail document={selectedAssembly.document} assembly={selectedAssembly.assembly} onBack={() => setSelectedAssembly(null)} />;
 
   return <main className="shell">
-    <header className="masthead"><div className="brand"><img src={equiposMcLogo} alt="Equipos Hidromecánicos MC" /></div><div className="title-block"><p>CONTROL DE FABRICACIÓN</p><h1>EH-150 · Tablero de ensambles</h1></div></header>
-    <nav className="group-tabs" aria-label="Tipo de ensambles">{(["GRÚA", "CARROCERÍA"] as Group[]).map((group) => <button key={group} className={activeGroup === group ? "active" : ""} onClick={() => setActiveGroup(group)}>{group}<span>{imports.filter((item) => item.group === group).length}</span></button>)}</nav>
+    <header className="masthead"><div className="brand"><img src={equiposMcLogo} alt="Equipos Hidromecánicos MC" /></div><div className="title-block"><p>CONTROL DE FABRICACIÓN</p><h1>{order.name} · Tablero de ensambles</h1></div><button className="back-button" disabled={loading} onClick={onBack}>← Órdenes de trabajo</button></header>
+    <nav className="group-tabs" aria-label="Tipo de ensambles">{order.tabs.map((group) => <button key={group} className={activeGroup === group ? "active" : ""} onClick={() => setActiveGroup(group)}>{group}<span>{imports.filter((item) => item.group === group).length}</span></button>)}<button onClick={onAddTab}>＋ Agregar pestaña</button></nav>
     <nav className="sub-tabs" aria-label="Vistas de la categoría"><button className={activeView === "RESUMEN" ? "active" : ""} onClick={() => setActiveView("RESUMEN")}>Resumen</button><button className={activeView === "DOCUMENTOS" ? "active" : ""} onClick={() => setActiveView("DOCUMENTOS")}>Subir documentos <span>{visibleImports.length}</span></button></nav>
     <section className="workspace">
       <div className="workspace-head"><div><p className="eyebrow">ENSAMBLES DE {activeGroup}</p><h2>Avance de fabricación</h2></div>{assemblyEntries.length > 0 && <div className="global-progress"><b>{percent(made, total)}%</b><span>avance general</span></div>}</div>
-      <CategoryReference group={activeGroup} />
-      {activeView === "RESUMEN" && <section className="chart-grid" aria-label="Avance de Grúa y Carrocería">
-        <DonutChart group="GRÚA" made={craneProgress.made} pending={craneProgress.pending} />
-        <DonutChart group="CARROCERÍA" made={bodyProgress.made} pending={bodyProgress.pending} />
+      {order.id === "legacy-eh150" && ["GRÚA", "CHASIS"].includes(activeGroup) && <CategoryReference group={activeGroup} />}
+      {activeView === "RESUMEN" && <section className="chart-grid" aria-label="Avance por pestaña">
+        {order.tabs.map((group) => <DonutChart key={group} group={group} {...groupProgress(group)} />)}
       </section>}
       {databaseError && <p className="database-error">{databaseError}</p>}
       {loadingStored ? <p className="loading-documents">Recuperando documentos almacenados…</p> :

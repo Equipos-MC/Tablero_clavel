@@ -1,7 +1,10 @@
+export type WorkOrder = { id: string; name: string; tabs: string[] };
+
 export type StoredDocument = {
   id: string;
   fileName: string;
-  group: "GRÚA" | "CARROCERÍA";
+  group: string;
+  orderId: string;
   storagePath: string;
   downloadUrl: string;
 };
@@ -23,13 +26,13 @@ async function apiRequest<T>(options?: RequestInit): Promise<T> {
   return payload as T;
 }
 
-export const listStoredDocuments = () => apiRequest<{ documents: StoredDocument[] }>();
+export const listStoredDocuments = () => apiRequest<{ documents: StoredDocument[]; orders: WorkOrder[] }>();
 
-export const prepareDocumentUpload = (fileName: string, group: StoredDocument["group"], contentType: string) =>
+export const prepareDocumentUpload = (fileName: string, group: StoredDocument["group"], contentType: string, orderId: string) =>
   apiRequest<UploadTicket>({
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action: "prepare-upload", fileName, group, contentType }),
+    body: JSON.stringify({ action: "prepare-upload", fileName, group, contentType, orderId }),
   });
 
 export async function uploadToSpace(uploadUrl: string, file: File) {
@@ -47,3 +50,6 @@ export const deleteStoredDocument = (storagePath: string) =>
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action: "delete", storagePath }),
   });
+
+export const saveWorkOrder = (data: { action: "create-order"; name: string; tabs: string[] } | { action: "add-tab"; orderId: string; tab: string }) =>
+  apiRequest<{ order: WorkOrder }>({ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });

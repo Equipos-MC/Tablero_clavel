@@ -81,3 +81,20 @@ durante la compilación del sitio estático.
 
 > Al no existir inicio de sesión, cualquier persona que conozca la URL pública
 > puede consultar, cargar o eliminar documentos del tablero.
+
+## Órdenes de trabajo
+
+La pantalla principal permite buscar, crear y seleccionar OT. Al crear una orden,
+escribe su nombre y agrega una o más pestañas. Dentro del tablero puedes usar
+**Agregar pestaña** para incorporar otras áreas después. Los Excel y avances se
+separan por OT y pestaña. Los nombres duplicados se rechazan, ignorando mayúsculas
+y acentos.
+
+Las OT y pestañas se guardan en el mismo Space privado mediante el servicio
+existente. Los archivos anteriores se asignan a **OT-EH-150**, con **GRÚA** y
+**CHASIS** (antes CARROCERÍA), sin mover ni borrar los objetos originales.
+Los documentos nuevos usan rutas documents/{orderId}/{pestaña codificada}/.
+La publicación debe actualizar tanto el sitio como el componente Functions
+desde este mismo commit. No requiere variables de entorno adicionales.
+
+Validación: npm run build, npx tsc --noEmit y node --test tests/orders.test.mjs.

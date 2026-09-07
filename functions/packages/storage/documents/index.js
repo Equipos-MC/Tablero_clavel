@@ -2,7 +2,46 @@ import { randomUUID } from "node:crypto";
 import { DeleteObjectCommand, GetObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
-const GROUP_FOLDERS = { "GRÚA": "grua", "CARROCERÍA": "carroceria" };
+const DEFAULT_ORDER = { id: "legacy-eh150", name: "OT-EH-150", tabs: ["GRÚA", "CHASIS"] };
+const normalize = (value) => value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase();
+const validLabel = (value) => typeof value === "string" && value.trim().length > 0 && value.trim().length <= 100;
+async function listOrders(client, bucket, objects) {
+  const records = await Promise.all(objects.filter((item) => /^orders\/[^/]+\.json$/.test(item.Key || "")).map(async (item) => {
+    const data = await client.send(new GetObjectCommand({ Bucket: bucket, Key: item.Key }));
+    return JSON.parse(await data.Body.transformToString());
+  }));
+  const orders = [{ ...DEFAULT_ORDER, tabs: [...DEFAULT_ORDER.tabs] }, ...records];
+  for (const order of orders) {
+    const prefix = "tabs/" + order.id + "/";
+    for (const item of objects.filter((item) => item.Key?.startsWith(prefix))) {
+      const tab = Buffer.from(item.Key.slice(prefix.length), "base64url").toString("utf8");
+      if (!order.tabs.some((name) => normalize(name) === normalize(tab))) order.tabs.push(tab);
+    }
+  }
+  return orders;
+}
+async function saveOrder(event, client, bucket) {
+  const orders = await listOrders(client, bucket, await listAllObjects(client, bucket));
+  let key, record;
+  if (event.action === "create-order") {
+    if (!validLabel(event.name) || !Array.isArray(event.tabs) || !event.tabs.length || !event.tabs.every(validLabel)) return response(400, { error: "Escribe el nombre de la OT y al menos una pestaña (máximo 100 caracteres por nombre)." });
+    const name = event.name.trim().toUpperCase();
+    const tabs = event.tabs.map((tab) => tab.trim().toUpperCase());
+    if (new Set(tabs.map(normalize)).size !== tabs.length) return response(400, { error: "No repitas nombres de pestañas." });
+    if (orders.some((order) => normalize(order.name) === normalize(name))) return response(409, { error: "Ya existe una OT con ese nombre." });
+    record = { id: Buffer.from(normalize(name)).toString("base64url"), name, tabs };
+    key = "orders/" + record.id + ".json";
+  } else {
+    const order = orders.find((item) => item.id === event.orderId);
+    if (!order || !validLabel(event.tab)) return response(400, { error: "La OT o la pestaña no es válida." });
+    const tab = event.tab.trim().toUpperCase();
+    if (order.tabs.some((name) => normalize(name) === normalize(tab))) return response(409, { error: "Esta pestaña ya existe." });
+    key = "tabs/" + order.id + "/" + Buffer.from(tab).toString("base64url");
+    record = { ...order, tabs: [...order.tabs, tab] };
+  }
+  await client.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: JSON.stringify(record), ContentType: "application/json" }));
+  return response(200, { order: record });
+}
 const EXCEL_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
 function configuration() {
@@ -52,7 +91,9 @@ function decodedFileName(storagePath) {
 
 function groupForPath(storagePath) {
   if (storagePath.startsWith("grua/")) return "GRÚA";
-  if (storagePath.startsWith("carroceria/")) return "CARROCERÍA";
+  if (storagePath.startsWith("carroceria/")) return "CHASIS";
+  const match = storagePath.match(/^documents\/[^/]+\/([^/]+)\/[^/]+$/);
+  if (match) return Buffer.from(match[1], "base64url").toString("utf8");
   return undefined;
 }
 
@@ -92,22 +133,27 @@ async function listDocuments(client, bucket) {
       storagePath,
       fileName: decodedFileName(storagePath),
       group: groupForPath(storagePath),
+      orderId: storagePath.startsWith("documents/") ? storagePath.split("/")[1] : DEFAULT_ORDER.id,
       downloadUrl,
     };
   }));
-  return response(200, { documents });
+  return response(200, { documents, orders: await listOrders(client, bucket, objects) });
 }
 
 async function prepareUpload(event, client, bucket) {
   const fileName = typeof event.fileName === "string" ? event.fileName.trim() : "";
   const group = event.group;
-  if (!fileName || fileName.length > 220 || !/\.(xlsx|xls)$/i.test(fileName) || !GROUP_FOLDERS[group]) {
+  if (!fileName || fileName.length > 220 || !/\.(xlsx|xls)$/i.test(fileName) || !validLabel(group)) {
     return response(400, { error: "El nombre, formato o grupo del documento no es válido." });
   }
   const contentType = typeof event.contentType === "string" && event.contentType
     ? event.contentType
     : EXCEL_CONTENT_TYPE;
-  const storagePath = `${GROUP_FOLDERS[group]}/${randomUUID()}--${encodedFileName(fileName)}`;
+  const orders = await listOrders(client, bucket, await listAllObjects(client, bucket));
+  const order = orders.find((item) => item.id === (event.orderId || DEFAULT_ORDER.id));
+  const tab = !event.orderId && group === "CARROCERÍA" ? "CHASIS" : group;
+  if (!order || !order.tabs.includes(tab)) return response(400, { error: "La OT o pestaña no existe." });
+  const storagePath = "documents/" + order.id + "/" + Buffer.from(tab).toString("base64url") + "/" + randomUUID() + "--" + encodedFileName(fileName);
   const uploadUrl = await getSignedUrl(
     client,
     new PutObjectCommand({ Bucket: bucket, Key: storagePath, ContentType: contentType }),
@@ -129,6 +175,7 @@ export async function main(event = {}) {
     const { client, bucket } = configuration();
     const method = event.http?.method || "GET";
     if (method === "GET") return await listDocuments(client, bucket);
+    if (method === "POST" && ["create-order", "add-tab"].includes(event.action)) return await saveOrder(event, client, bucket);
     if (method === "POST" && event.action === "prepare-upload") return await prepareUpload(event, client, bucket);
     if (method === "POST" && event.action === "delete") return await deleteDocument(event, client, bucket);
     return response(405, { error: "Operación no permitida." });
