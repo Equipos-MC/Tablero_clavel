@@ -52,3 +52,33 @@ test('reject empty names, duplicate orders and duplicate tabs',async()=>{
     {action:'add-tab',orderId:'legacy-eh150',tab:'grua'},
   ]) assert.ok((await call(post(data))).statusCode>=400);
 });
+test('tab images persist separately by OT and tab and replace only their own image', async () => {
+  const {call,objects}=service();
+  const originalCount=(await call()).body.documents.length;
+  const created=await call(post({action:'create-order',name:'OT-IMAGE-TEST',tabs:['GRÚA','COCINA']}));
+  const orderId=created.body.order.id;
+  const query={action:'get-tab-image',orderId,group:'GRÚA'};
+  assert.equal((await call(post(query))).body.downloadUrl,null);
+  const prepare={action:'prepare-tab-image',orderId,group:'GRÚA',contentType:'image/png',size:1024};
+  const ticket=await call(post(prepare));
+  assert.equal(ticket.statusCode,200);
+  assert.equal(objects.has(ticket.body.storagePath),false,'preparing a ticket does not replace an existing image');
+  objects.set(ticket.body.storagePath,'image-one');
+  assert.ok((await call(post(query))).body.downloadUrl);
+  assert.equal((await call(post({...query,group:'COCINA'}))).body.downloadUrl,null);
+  assert.equal((await call(post({...query,orderId:'legacy-eh150'}))).body.downloadUrl,null);
+  const replacement=await call(post({...prepare,contentType:'image/jpeg'}));
+  assert.equal(replacement.body.storagePath,ticket.body.storagePath);
+  assert.equal(objects.get(ticket.body.storagePath),'image-one');
+  objects.set(replacement.body.storagePath,'image-two');
+  assert.equal([...objects.keys()].filter(key=>key.startsWith('tab-images/')).length,1);
+  assert.equal((await call()).body.documents.length,originalCount,'images are not listed as Excel documents');
+});
+test('reject invalid image types, sizes and unknown OT or tab',async()=>{
+  const {call}=service();
+  const data={action:'prepare-tab-image',orderId:'legacy-eh150',group:'GRÚA',contentType:'image/png',size:1024};
+  for(const overrides of [{contentType:'image/svg+xml'},{contentType:'text/html'},{size:0},{size:10485761},{size:'1024'},{orderId:'missing'},{group:'missing'}]) {
+    assert.equal((await call(post({...data,...overrides}))).statusCode,400);
+  }
+  for(const contentType of ['image/png','image/jpeg','image/webp']) assert.equal((await call(post({...data,contentType}))).statusCode,200);
+});

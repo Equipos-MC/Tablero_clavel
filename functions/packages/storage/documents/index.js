@@ -162,6 +162,25 @@ async function prepareUpload(event, client, bucket) {
   return response(200, { storagePath, uploadUrl });
 }
 
+
+async function tabImage(event, client, bucket) {
+  const objects = await listAllObjects(client, bucket);
+  const orders = await listOrders(client, bucket, objects);
+  const order = orders.find((item) => item.id === event.orderId);
+  if (!order || !order.tabs.includes(event.group)) return response(400, { error: "La OT o pestaña no existe." });
+  const storagePath = "tab-images/" + order.id + "/" + Buffer.from(event.group).toString("base64url");
+  if (event.action === "prepare-tab-image") {
+    if (!["image/jpeg", "image/png", "image/webp"].includes(event.contentType) || !Number.isInteger(event.size) || event.size <= 0 || event.size > 10 * 1024 * 1024) {
+      return response(400, { error: "Selecciona una imagen JPG, PNG o WebP de hasta 10 MB." });
+    }
+    const uploadUrl = await getSignedUrl(client, new PutObjectCommand({ Bucket: bucket, Key: storagePath, ContentType: event.contentType }), { expiresIn: 900 });
+    return response(200, { storagePath, uploadUrl });
+  }
+  if (!objects.some((item) => item.Key === storagePath)) return response(200, { downloadUrl: null });
+  const downloadUrl = await getSignedUrl(client, new GetObjectCommand({ Bucket: bucket, Key: storagePath, ResponseCacheControl: "no-store" }), { expiresIn: 900 });
+  return response(200, { downloadUrl });
+}
+
 async function deleteDocument(event, client, bucket) {
   if (!validStoragePath(event.storagePath)) {
     return response(400, { error: "La ruta del documento no es válida." });
@@ -175,6 +194,7 @@ export async function main(event = {}) {
     const { client, bucket } = configuration();
     const method = event.http?.method || "GET";
     if (method === "GET") return await listDocuments(client, bucket);
+    if (method === "POST" && ["get-tab-image", "prepare-tab-image"].includes(event.action)) return await tabImage(event, client, bucket);
     if (method === "POST" && ["create-order", "add-tab"].includes(event.action)) return await saveOrder(event, client, bucket);
     if (method === "POST" && event.action === "prepare-upload") return await prepareUpload(event, client, bucket);
     if (method === "POST" && event.action === "delete") return await deleteDocument(event, client, bucket);

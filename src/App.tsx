@@ -1,3 +1,4 @@
+import TabImage from "./TabImage";
 import { useEffect, useRef, useState, type ChangeEvent, type DragEvent } from "react";
 import * as XLSX from "xlsx";
 import JSZip from "jszip";
@@ -266,17 +267,6 @@ function DonutChart({ group, made, pending }: { group: Group; made: number; pend
   </article>;
 }
 
-function CategoryReference({ group }: { group: Group }) {
-  const base = import.meta.env.BASE_URL;
-  const isCrane = group === "GRÚA";
-  return <aside className="category-reference">
-    <img
-      src={`${base}assets/${isCrane ? "eh150-grua.jpeg" : "eh150-carroceria.png"}`}
-      alt={isCrane ? "Vista lateral de la grúa EH-150" : "Imagen de carrocería EH-150"}
-    />
-  </aside>;
-}
-
 function AssemblyDetail({ document, assembly, onBack }: { document: ImportResult; assembly: Assembly; onBack: () => void }) {
   const done = percent(assembly.made, assembly.target);
   return <main className="shell detail-screen">
@@ -408,7 +398,7 @@ export default function App({ order, onBack, onAddTab }: { order: WorkOrder; onB
     <nav className="sub-tabs" aria-label="Vistas de la categoría"><button className={activeView === "RESUMEN" ? "active" : ""} onClick={() => setActiveView("RESUMEN")}>Resumen</button><button className={activeView === "DOCUMENTOS" ? "active" : ""} onClick={() => setActiveView("DOCUMENTOS")}>Subir documentos <span>{visibleImports.length}</span></button></nav>
     <section className="workspace">
       <div className="workspace-head"><div><p className="eyebrow">ENSAMBLES DE {activeGroup}</p><h2>Avance de fabricación</h2></div>{assemblyEntries.length > 0 && <div className="global-progress"><b>{percent(made, total)}%</b><span>avance general</span></div>}</div>
-      {order.id === "legacy-eh150" && ["GRÚA", "CHASIS"].includes(activeGroup) && <CategoryReference group={activeGroup} />}
+      <TabImage key={`${order.id}:${activeGroup}`} orderId={order.id} group={activeGroup} />
       {activeView === "RESUMEN" && <section className="chart-grid" aria-label="Avance por pestaña">
         {order.tabs.map((group) => <DonutChart key={group} group={group} {...groupProgress(group)} />)}
       </section>}

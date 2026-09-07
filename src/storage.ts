@@ -53,3 +53,9 @@ export const deleteStoredDocument = (storagePath: string) =>
 
 export const saveWorkOrder = (data: { action: "create-order"; name: string; tabs: string[] } | { action: "add-tab"; orderId: string; tab: string }) =>
   apiRequest<{ order: WorkOrder }>({ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+
+export const getTabImage = (orderId: string, group: string) =>
+  apiRequest<{ downloadUrl: string | null }>({ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "get-tab-image", orderId, group }) });
+
+export const prepareTabImage = (orderId: string, group: string, file: File) =>
+  apiRequest<UploadTicket>({ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "prepare-tab-image", orderId, group, contentType: file.type, size: file.size }) });

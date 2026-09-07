@@ -98,3 +98,12 @@ La publicación debe actualizar tanto el sitio como el componente Functions
 desde este mismo commit. No requiere variables de entorno adicionales.
 
 Validación: npm run build, npx tsc --noEmit y node --test tests/orders.test.mjs.
+
+### Imagen por pestaña
+
+Cada pestaña incluye **Subir imagen** o **Cambiar imagen**. Se acepta una imagen
+JPG, PNG o WebP de hasta 10 MB; reemplazarla conserva los documentos y avances.
+Las imágenes se guardan en `tab-images/{orderId}/{pestaña codificada}` dentro
+del mismo Space privado. Las imágenes originales de Grúa y Chasis en OT-EH-150
+se muestran mientras no exista una imagen personalizada. Se debe actualizar
+el componente Functions junto con el frontend para habilitar esta función.
