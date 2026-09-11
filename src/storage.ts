@@ -1,3 +1,4 @@
+import { requestJson } from "./request";
 export type WorkOrder = { id: string; name: string; tabs: string[] };
 
 export type StoredDocument = {
@@ -16,14 +17,8 @@ type UploadTicket = {
 
 const apiUrl = import.meta.env.VITE_DOCUMENTS_API_URL || "/api/storage/documents";
 
-async function apiRequest<T>(options?: RequestInit): Promise<T> {
-  const response = await fetch(apiUrl, options);
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const message = typeof payload.error === "string" ? payload.error : "El almacenamiento no respondió correctamente.";
-    throw new Error(message);
-  }
-  return payload as T;
+function apiRequest<T>(options?: RequestInit, retryRead = !options?.method || options.method === "GET"): Promise<T> {
+  return requestJson<T>(apiUrl, options, retryRead);
 }
 
 export const listStoredDocuments = () => apiRequest<{ documents: StoredDocument[]; orders: WorkOrder[] }>();
@@ -55,7 +50,7 @@ export const saveWorkOrder = (data: { action: "create-order"; name: string; tabs
   apiRequest<{ order: WorkOrder }>({ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
 
 export const getTabImage = (orderId: string, group: string) =>
-  apiRequest<{ downloadUrl: string | null }>({ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "get-tab-image", orderId, group }) });
+  apiRequest<{ downloadUrl: string | null }>({ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "get-tab-image", orderId, group }) }, true);
 
 export const prepareTabImage = (orderId: string, group: string, file: File) =>
   apiRequest<UploadTicket>({ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "prepare-tab-image", orderId, group, contentType: file.type, size: file.size }) });
