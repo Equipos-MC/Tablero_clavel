@@ -1,5 +1,5 @@
 import { requestJson } from "./request";
-export type WorkOrder = { id: string; name: string; tabs: string[] };
+export type WorkOrder = { id: string; name: string; tabs: string[]; quantity?: number };
 
 export type StoredDocument = {
   id: string;
@@ -46,7 +46,7 @@ export const deleteStoredDocument = (storagePath: string) =>
     body: JSON.stringify({ action: "delete", storagePath }),
   });
 
-export const saveWorkOrder = (data: { action: "create-order"; name: string; tabs: string[] } | { action: "add-tab"; orderId: string; tab: string }) =>
+export const saveWorkOrder = (data: { action: "create-order"; name: string; tabs: string[]; quantity: number } | { action: "set-quantity"; orderId: string; quantity: number } | { action: "add-tab"; orderId: string; tab: string }) =>
   apiRequest<{ order: WorkOrder }>({ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
 
 export const getTabImage = (orderId: string, group: string) =>

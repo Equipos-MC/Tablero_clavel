@@ -82,3 +82,18 @@ test('reject invalid image types, sizes and unknown OT or tab',async()=>{
   }
   for(const contentType of ['image/png','image/jpeg','image/webp']) assert.equal((await call(post({...data,contentType}))).statusCode,200);
 });
+test('production quantity persists for new and existing orders without losing tabs or documents',async()=>{
+ const {call}=service();
+ const created=await call(post({action:'create-order',name:'OT-8',tabs:['Barrena'],quantity:8}));
+ assert.equal(created.body.order.quantity,8);
+ let orders=(await call()).body.orders;
+ assert.equal(orders.find(o=>o.id===created.body.order.id).quantity,8);
+ assert.equal((await call(post({action:'set-quantity',orderId:'legacy-eh150',quantity:8}))).statusCode,200);
+ await call(post({action:'add-tab',orderId:'legacy-eh150',tab:'Motor'}));
+ const result=await call();
+ assert.equal(result.body.orders[0].quantity,8);
+ assert.ok(result.body.orders[0].tabs.includes('MOTOR'));
+ assert.equal(result.body.documents.length,2);
+ for(const quantity of [0,-1,1.5,'8',null]) assert.equal((await call(post({action:'set-quantity',orderId:'legacy-eh150',quantity}))).statusCode,400);
+ assert.equal((await call(post({action:'set-quantity',orderId:'missing',quantity:8}))).statusCode,400);
+});

@@ -12,6 +12,11 @@ async function listOrders(client, bucket, objects) {
   }));
   const orders = [{ ...DEFAULT_ORDER, tabs: [...DEFAULT_ORDER.tabs] }, ...records];
   for (const order of orders) {
+    const settingsKey = "order-settings/" + order.id + ".json";
+    if (objects.some((item) => item.Key === settingsKey)) {
+      const data = await client.send(new GetObjectCommand({ Bucket: bucket, Key: settingsKey }));
+      order.quantity = JSON.parse(await data.Body.transformToString()).quantity;
+    }
     const prefix = "tabs/" + order.id + "/";
     for (const item of objects.filter((item) => item.Key?.startsWith(prefix))) {
       const tab = Buffer.from(item.Key.slice(prefix.length), "base64url").toString("utf8");
@@ -23,14 +28,20 @@ async function listOrders(client, bucket, objects) {
 async function saveOrder(event, client, bucket) {
   const orders = await listOrders(client, bucket, await listAllObjects(client, bucket));
   let key, record;
+  if ((event.action === "set-quantity" || event.quantity !== undefined) && (!Number.isSafeInteger(event.quantity) || event.quantity <= 0)) return response(400, { error: "La cantidad a fabricar debe ser un número entero mayor que cero." });
   if (event.action === "create-order") {
     if (!validLabel(event.name) || !Array.isArray(event.tabs) || !event.tabs.length || !event.tabs.every(validLabel)) return response(400, { error: "Escribe el nombre de la OT y al menos una pestaña (máximo 100 caracteres por nombre)." });
     const name = event.name.trim().toUpperCase();
     const tabs = event.tabs.map((tab) => tab.trim().toUpperCase());
     if (new Set(tabs.map(normalize)).size !== tabs.length) return response(400, { error: "No repitas nombres de pestañas." });
     if (orders.some((order) => normalize(order.name) === normalize(name))) return response(409, { error: "Ya existe una OT con ese nombre." });
-    record = { id: Buffer.from(normalize(name)).toString("base64url"), name, tabs };
+    record = { id: Buffer.from(normalize(name)).toString("base64url"), name, tabs, ...(event.quantity !== undefined ? { quantity: event.quantity } : {}) };
     key = "orders/" + record.id + ".json";
+  } else if (event.action === "set-quantity") {
+    const order = orders.find((item) => item.id === event.orderId);
+    if (!order) return response(400, { error: "La OT no existe." });
+    key = "order-settings/" + order.id + ".json";
+    record = { ...order, quantity: event.quantity };
   } else {
     const order = orders.find((item) => item.id === event.orderId);
     if (!order || !validLabel(event.tab)) return response(400, { error: "La OT o la pestaña no es válida." });
@@ -195,7 +206,7 @@ export async function main(event = {}) {
     const method = event.http?.method || "GET";
     if (method === "GET") return await listDocuments(client, bucket);
     if (method === "POST" && ["get-tab-image", "prepare-tab-image"].includes(event.action)) return await tabImage(event, client, bucket);
-    if (method === "POST" && ["create-order", "add-tab"].includes(event.action)) return await saveOrder(event, client, bucket);
+    if (method === "POST" && ["create-order", "add-tab", "set-quantity"].includes(event.action)) return await saveOrder(event, client, bucket);
     if (method === "POST" && event.action === "prepare-upload") return await prepareUpload(event, client, bucket);
     if (method === "POST" && event.action === "delete") return await deleteDocument(event, client, bucket);
     return response(405, { error: "Operación no permitida." });

@@ -107,3 +107,14 @@ Las imágenes se guardan en `tab-images/{orderId}/{pestaña codificada}` dentro
 del mismo Space privado. Las imágenes originales de Grúa y Chasis en OT-EH-150
 se muestran mientras no exista una imagen personalizada. Se debe actualizar
 el componente Functions junto con el frontend para habilitar esta función.
+
+### Meta de producción y avance global
+
+Al crear una OT se captura la cantidad de unidades finales a fabricar. También
+puede definirse o cambiarse desde **Definir cantidad / Cambiar cantidad** en una
+OT existente. La cantidad se aplica a todas sus pestañas. Para 8 unidades y 15
+tipos de ensamble cargados, la meta es 120 ensambles. El avance suma las HECHAS
+de cada Excel, limitando cada tipo a 8, y divide entre 120. Las filas del tablero
+usan la misma meta sin modificar los Excel originales. La tarjeta indica que
+el cálculo depende de los tipos cargados: deben cargarse todos los ensambles.
+Las OT anteriores no reciben una cantidad supuesta; se debe definir su meta.

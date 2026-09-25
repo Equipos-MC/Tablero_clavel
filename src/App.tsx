@@ -1,3 +1,4 @@
+import { assemblyForQuantity, productionProgress } from "./progress";
 import TabImage from "./TabImage";
 import { useEffect, useRef, useState, type ChangeEvent, type DragEvent } from "react";
 import * as XLSX from "xlsx";
@@ -252,17 +253,15 @@ function AssemblyProgress({ assembly, onClick }: { assembly: Assembly; onClick?:
   </article>;
 }
 
-function DonutChart({ group, made, pending }: { group: Group; made: number; pending: number }) {
-  const total = made + pending;
-  const done = percent(made, total);
+function DonutChart({ group, quantity, assemblies, loading, onQuantity }: { group: Group; quantity?: number; assemblies: Assembly[]; loading: boolean; onQuantity: () => void }) {
+  const progress = productionProgress(assemblies, quantity);
+  const ready = !!quantity && !!progress.types && !loading;
   return <article className="donut-card">
-    <div className="donut" style={{ background: `conic-gradient(var(--green) 0 ${done}%, #dce6ec ${done}% 100%)` }}>
-      <div><strong>{done}%</strong><span>avance</span></div>
-    </div>
-    <div className="donut-copy">
-      <p className="eyebrow">{group}</p>
-      <h3>Avance del ensamble</h3>
-      <dl><div><dt>Hechas</dt><dd>{made}</dd></div><div><dt>Por hacer</dt><dd>{pending}</dd></div></dl>
+    <div className="donut" style={{ background: `conic-gradient(var(--green) 0 ${ready ? progress.percent : 0}%, #dce6ec 0 100%)` }}><div><strong>{ready ? progress.percent + "%" : "—"}</strong><span>avance global</span></div></div>
+    <div className="donut-copy"><p className="eyebrow">{group}</p><h3>Avance global de fabricación</h3>
+      <p className="production-goal">{quantity ? <><b>{quantity}</b> unidades a fabricar · {quantity} de cada ensamble</> : "Define la cantidad a fabricar para calcular el avance."}</p>
+      <button className="back-button" onClick={onQuantity}>{quantity ? "Cambiar cantidad" : "Definir cantidad"}</button>
+      {loading ? <p role="status">Cargando ensambles…</p> : quantity && progress.types ? <><dl><div><dt>Ensambles hechos</dt><dd>{progress.made}</dd></div><div><dt>Por hacer</dt><dd>{progress.pending}</dd></div><div><dt>Meta de ensambles</dt><dd>{progress.total}</dd></div></dl><p className="production-note">{progress.types} tipos de ensamble × {quantity} unidades. Calculado con los ensambles cargados; carga todos los tipos para obtener el avance completo.</p></> : quantity ? <p className="production-note">Carga los ensambles para calcular el avance de tus {quantity} unidades.</p> : null}
     </div>
   </article>;
 }
@@ -278,7 +277,7 @@ function AssemblyDetail({ document, assembly, onBack }: { document: ImportResult
   </main>;
 }
 
-export default function App({ order, onBack, onAddTab }: { order: WorkOrder; onBack: () => void; onAddTab: () => void }) {
+export default function App({ order, onBack, onAddTab, onQuantity }: { order: WorkOrder; onBack: () => void; onAddTab: () => void; onQuantity: () => void }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [imports, setImports] = useState<ImportResult[]>([]);
   const [dragging, setDragging] = useState(false);
@@ -377,19 +376,9 @@ export default function App({ order, onBack, onAddTab }: { order: WorkOrder; onB
     setDeletingId(null);
   };
   const visibleImports = imports.filter((item) => item.group === activeGroup);
-  const assemblyEntries = visibleImports.flatMap((doc) => doc.assemblies.map((assembly) => ({ document: doc, assembly })));
+  const assemblyEntries = visibleImports.flatMap((doc) => doc.assemblies.map((assembly) => ({ document: doc, assembly: assemblyForQuantity(assembly, order.quantity) })));
   const total = assemblyEntries.reduce((sum, { assembly }) => sum + assembly.target, 0);
   const made = assemblyEntries.reduce((sum, { assembly }) => sum + assembly.made, 0);
-  const groupProgress = (group: Group) => {
-    const assemblies = imports
-      .filter((item) => item.group === group)
-      .flatMap((item) => item.assemblies);
-    return {
-      made: assemblies.reduce((sum, assembly) => sum + assembly.made, 0),
-      pending: assemblies.reduce((sum, assembly) => sum + assembly.pending, 0),
-    };
-  };
-
   if (selectedAssembly) return <AssemblyDetail document={selectedAssembly.document} assembly={selectedAssembly.assembly} onBack={() => setSelectedAssembly(null)} />;
 
   return <main className="shell">
@@ -397,10 +386,10 @@ export default function App({ order, onBack, onAddTab }: { order: WorkOrder; onB
     <nav className="group-tabs" aria-label="Tipo de ensambles">{order.tabs.map((group) => <button key={group} className={activeGroup === group ? "active" : ""} onClick={() => setActiveGroup(group)}>{group}<span>{imports.filter((item) => item.group === group).length}</span></button>)}<button onClick={onAddTab}>＋ Agregar pestaña</button></nav>
     <nav className="sub-tabs" aria-label="Vistas de la categoría"><button className={activeView === "RESUMEN" ? "active" : ""} onClick={() => setActiveView("RESUMEN")}>Resumen</button><button className={activeView === "DOCUMENTOS" ? "active" : ""} onClick={() => setActiveView("DOCUMENTOS")}>Subir documentos <span>{visibleImports.length}</span></button></nav>
     <section className="workspace">
-      <div className="workspace-head"><div><p className="eyebrow">ENSAMBLES DE {activeGroup}</p><h2>Avance de fabricación</h2></div>{assemblyEntries.length > 0 && <div className="global-progress"><b>{percent(made, total)}%</b><span>avance general</span></div>}</div>
+      <div className="workspace-head"><div><p className="eyebrow">ENSAMBLES DE {activeGroup}</p><h2>Avance de fabricación</h2></div>{!loadingStored && !!order.quantity && assemblyEntries.length > 0 && <div className="global-progress"><b>{percent(made, total)}%</b><span>avance global de {activeGroup.toLowerCase()}</span></div>}</div>
       <TabImage key={`${order.id}:${activeGroup}`} orderId={order.id} group={activeGroup} />
       {activeView === "RESUMEN" && <section className="chart-grid" aria-label="Avance por pestaña">
-        {order.tabs.map((group) => <DonutChart key={group} group={group} {...groupProgress(group)} />)}
+        {order.tabs.map((group) => <DonutChart key={group} group={group} quantity={order.quantity} assemblies={imports.filter((item) => item.group === group).flatMap((item) => item.assemblies)} loading={loadingStored} onQuantity={onQuantity} />)}
       </section>}
       {databaseError && <p className="database-error">{databaseError}</p>}
       {loadingStored ? <p className="loading-documents">Recuperando documentos almacenados…</p> :
